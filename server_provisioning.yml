@@ -1,0 +1,85 @@
+---
+- hosts: all
+
+  handlers:
+    - name: restart apache
+      service: name=apache2 state=restarted
+
+  tasks:
+    - name: Install tools to manage apt repos
+      apt:
+        state: present
+        name:
+          - python-apt
+          - python-pycurl
+
+    - name: Add PPA repo for RVM
+      apt_repository:
+        repo: 'ppa:rael-gc/rvm'
+        update_cache: yes
+
+    - name: Install Apache, MySQL, RVM, Passenger, and dependencies
+      apt:
+        name: [ 'apache2', 'mysql-server', 'rvm', 'libapache2-mod-passenger', 'python3-mysqldb' ]
+        state: latest 
+
+    - name: Start Apache and MySQL
+      service: "name={{ item }} state=started enabled=yes"
+      with_items:
+        - apache2
+        - mysql    
+
+    - name: Ensure Passenger module is enabled
+      apache2_module:
+        state: present
+        name: passenger
+      notify: restart apache
+
+    - name: Create 'deploy' user
+      user:
+        name: deploy
+        shell: /bin/bash
+        groups: rvm
+        append: yes
+        generate_ssh_key: yes
+        ssh_key_bits: 4096
+        ssh_key_file: .ssh/id_rsa
+    
+    # this is needed since I cant figure out how to install ruby via RVM without it
+    - name: Sudo without password for 'deploy' user
+      copy:
+        content: deploy ALL=(ALL:ALL) NOPASSWD:ALL
+        dest: /etc/sudoers.d/deploy_nopasswd
+        mode: 0440
+
+    - name: Create DocumentRoot dir
+      file:
+        path: /var/www/html/DocumentRoot
+        owner: deploy
+        group: root
+        mode: 0640
+        state: directory
+
+    - name: Remove test MySQL db
+      mysql_db: db=test state=absent
+
+    - name: Create 'hello_world' db
+      mysql_db: db=hello_world state=present
+
+    - name: Add 'deploy' user to 'hello_world' db
+      mysql_user:
+        name: deploy
+        password: deploy1234
+        priv: "hello_world.*:ALL"
+        host: localhost
+        state: present
+      no_log: true
+
+    - name: Configure RVM and install ruby 2.3.x
+      shell: /usr/share/rvm/bin/rvm user gemsets && /usr/share/rvm/bin/rvm install ruby-2.3
+      become: true
+      become_user: deploy
+      register: result
+    
+    - debug:
+        var: result
